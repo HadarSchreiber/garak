@@ -890,6 +890,8 @@ class SourceToSink(_SourceToSinkMixin, AgentBreaker):
         "max_graph_edges": 128,
         "max_path_expansions": 1024,
         "max_terminal_attempts_per_tool": 1,
+        "allow_side_effecting_intermediates": False,
+        "edge_candidates": "matching",
     }
 
     def __init__(self, config_root=_config):

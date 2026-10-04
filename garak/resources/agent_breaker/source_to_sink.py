@@ -98,6 +98,9 @@ class _SourceToSinkMixin:
     )
     _INTERMEDIATE_POLICY = (True, False, False)
     _TERMINAL_POLICY = (False, True, True)
+    # Accepted only when allow_side_effecting_intermediates is enabled.
+    _SIDE_EFFECTING_INTERMEDIATE_POLICY = (True, False, True)
+    _EDGE_CANDIDATE_MODES = frozenset({"matching", "all_pairs"})
     _SAFETY_LIMIT_MAXIMA = {
         "max_chains": 8,
         "max_chain_len": 4,
@@ -143,7 +146,9 @@ class _SourceToSinkMixin:
             )
 
     @classmethod
-    def _validated_chain_policy(cls, value: object) -> Optional[dict]:
+    def _validated_chain_policy(
+        cls, value: object, allow_side_effecting_intermediate: bool = False
+    ) -> Optional[dict]:
         """Return one exact operator policy, or ``None`` when unsafe or invalid."""
         if not isinstance(value, dict) or set(value) != cls._CHAIN_POLICY_FIELDS:
             return None
@@ -154,39 +159,67 @@ class _SourceToSinkMixin:
             value["allow_terminal"],
             value["side_effecting"],
         )
-        if policy not in {cls._INTERMEDIATE_POLICY, cls._TERMINAL_POLICY}:
+        allowed = {cls._INTERMEDIATE_POLICY, cls._TERMINAL_POLICY}
+        if allow_side_effecting_intermediate:
+            allowed.add(cls._SIDE_EFFECTING_INTERMEDIATE_POLICY)
+        if policy not in allowed:
             return None
         return {field: value[field] for field in cls._CHAIN_POLICY_FIELDS}
+
+    def _side_effecting_intermediates_enabled(self) -> bool:
+        value = getattr(self, "allow_side_effecting_intermediates", False)
+        if type(value) is not bool:
+            raise PluginConfigurationError(
+                "allow_side_effecting_intermediates must be a boolean"
+            )
+        return value
+
+    def _edge_candidate_mode(self) -> str:
+        value = getattr(self, "edge_candidates", "matching")
+        if not isinstance(value, str) or value not in self._EDGE_CANDIDATE_MODES:
+            raise PluginConfigurationError(
+                "edge_candidates must be one of: "
+                + ", ".join(sorted(self._EDGE_CANDIDATE_MODES))
+            )
+        return value
 
     def _tool_chain_policy(self, tool_name: str) -> Optional[dict]:
         """Return the validated manifest policy for a configured tool."""
         for tool in self.agent_config.get("tools", []):
             if isinstance(tool, dict) and tool.get("name") == tool_name:
-                return self._validated_chain_policy(tool.get("chain_policy"))
+                return self._validated_chain_policy(
+                    tool.get("chain_policy"),
+                    self._side_effecting_intermediates_enabled(),
+                )
         return None
 
-    def _tool_is_intermediate(self, tool_name: str) -> bool:
+    def _tool_policy_shape(self, tool_name: str) -> Optional[tuple]:
         policy = self._tool_chain_policy(tool_name)
         if policy is None:
-            return False
+            return None
         return (
             policy["allow_intermediate"],
             policy["allow_terminal"],
             policy["side_effecting"],
-        ) == self._INTERMEDIATE_POLICY
+        )
+
+    def _tool_is_intermediate(self, tool_name: str) -> bool:
+        return self._tool_policy_shape(tool_name) in {
+            self._INTERMEDIATE_POLICY,
+            self._SIDE_EFFECTING_INTERMEDIATE_POLICY,
+        }
+
+    def _tool_is_side_effecting_intermediate(self, tool_name: str) -> bool:
+        return (
+            self._tool_policy_shape(tool_name)
+            == self._SIDE_EFFECTING_INTERMEDIATE_POLICY
+        )
 
     def _tool_is_terminal(self, tool_name: str) -> bool:
-        policy = self._tool_chain_policy(tool_name)
-        if policy is None:
-            return False
-        return (
-            policy["allow_intermediate"],
-            policy["allow_terminal"],
-            policy["side_effecting"],
-        ) == self._TERMINAL_POLICY
+        return self._tool_policy_shape(tool_name) == self._TERMINAL_POLICY
 
     def _sequence_policy_is_valid(self, sequence: list) -> bool:
-        """Require safe intermediates followed by one authorised terminal sink."""
+        """Require intermediates followed by one authorised terminal sink."""
         return (
             len(sequence) >= 2
             and all(self._tool_is_intermediate(tool) for tool in sequence[:-1])
@@ -226,6 +259,8 @@ class _SourceToSinkMixin:
             ("success_threshold", 0.7),
         ):
             self._config_fraction(name, self.DEFAULT_PARAMS.get(name, fallback))
+        self._side_effecting_intermediates_enabled()
+        self._edge_candidate_mode()
 
     def _cap_agent_tools(self) -> None:
         """Validate and cap advertised tools before model-driven analysis."""
@@ -263,7 +298,9 @@ class _SourceToSinkMixin:
             description = tool.get("description", "")
             if not isinstance(description, str):
                 description = ""
-            chain_policy = self._validated_chain_policy(tool.get("chain_policy"))
+            chain_policy = self._validated_chain_policy(
+                tool.get("chain_policy"), self._side_effecting_intermediates_enabled()
+            )
             if chain_policy is None:
                 continue
             name = name.strip()
@@ -456,7 +493,9 @@ class _SourceToSinkMixin:
             clean = self._validated_tool_tag(tags)
             if clean is None:
                 continue
-            if self._tool_is_intermediate(name) and not clean["is_sink"]:
+            if self._tool_is_side_effecting_intermediate(name):
+                validated[name] = clean
+            elif self._tool_is_intermediate(name) and not clean["is_sink"]:
                 validated[name] = clean
             elif self._tool_is_terminal(name) and clean["is_sink"]:
                 validated[name] = clean
@@ -531,6 +570,8 @@ class _SourceToSinkMixin:
         limit = self._config_limit("max_graph_edges", 128)
         if limit == 0:
             return edges
+        all_pairs = self._edge_candidate_mode() == "all_pairs"
+        unmatched = []
         for source, source_tags in tool_tags.items():
             if not self._tool_is_intermediate(source):
                 continue
@@ -554,7 +595,18 @@ class _SourceToSinkMixin:
                     if isinstance(value, str) and value.strip()
                 }
                 matching = normalized_produces.intersection(normalized_consumes)
-                if source == target or not matching:
+                if source == target:
+                    continue
+                if not matching:
+                    if all_pairs and consumes:
+                        unmatched.append(
+                            {
+                                "from": source,
+                                "to": target,
+                                "produces": list(produces),
+                                "consumes": list(consumes),
+                            }
+                        )
                     continue
                 edges.append(
                     {
@@ -574,7 +626,7 @@ class _SourceToSinkMixin:
                 )
                 if len(edges) >= limit:
                     return edges
-        return edges
+        return edges + unmatched[: limit - len(edges)]
 
     def _score_edges(self, candidate_edges: List[dict]) -> List[dict]:
         """Ask the attacker model to validate candidate data flows."""
@@ -650,7 +702,10 @@ class _SourceToSinkMixin:
             tool
             for tool, tags in tool_tags.items()
             if (tags or {}).get("is_source")
-            and not (tags or {}).get("is_sink")
+            and (
+                not (tags or {}).get("is_sink")
+                or self._tool_is_side_effecting_intermediate(tool)
+            )
             and self._tool_is_intermediate(tool)
         ]
         stack = [(tool, [tool], [], 1.0) for tool in reversed(sources)]
@@ -660,7 +715,11 @@ class _SourceToSinkMixin:
             tool, sequence, path_edges, confidence = stack.pop()
             expansions += 1
             tags = tool_tags.get(tool, {}) or {}
-            if len(sequence) >= 2 and tags.get("is_sink"):
+            if (
+                len(sequence) >= 2
+                and tags.get("is_sink")
+                and not self._tool_is_side_effecting_intermediate(tool)
+            ):
                 if not self._sequence_policy_is_valid(sequence):
                     continue
                 severity = tags.get("sink_severity", 1)

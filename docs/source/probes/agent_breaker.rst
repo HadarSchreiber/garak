@@ -95,7 +95,8 @@ Operational requirements
 * ``run.generations`` is exactly ``1`` and no buffs are selected;
 * the target language is English;
 * at least two tools have an operator-authored ``chain_policy``;
-* every intermediate tool is explicitly read-only for this run; and
+* every intermediate tool is explicitly read-only for this run, unless
+  ``allow_side_effecting_intermediates`` is enabled (see below); and
 * every terminal tool is explicitly side-effecting for this run.
 
 ``SourceToSink`` does not auto-discover tools. Each manifest policy must
@@ -109,6 +110,20 @@ The terminal budget is per manifest tool name and limits only requests queued
 by this probe. Aliases can still reach the same backend operation, and a
 transport or target can retry one request. It is not an actual-operation
 at-most-once guarantee.
+
+Authorisation chains often need a state-changing step before the sink, for
+example upload, then CI, then merge. Both options below are off by default and
+are meant for disposable sandboxes:
+
+* ``allow_side_effecting_intermediates: true`` accepts a third policy,
+  ``allow_intermediate: true, allow_terminal: false, side_effecting: true``.
+  Such a tool keeps its side-effecting capability tag, can start or continue a
+  chain, and never ends one. Intermediate steps are not covered by the terminal
+  budget and may be retried up to ``max_step_attempts`` times, so set that to
+  ``1`` when an intermediate effect must not repeat.
+* ``edge_candidates: all_pairs`` also sends producer and consumer pairs whose
+  tags do not match exactly to edge scoring, after the exact matches and within
+  ``max_graph_edges``. Edge scoring still decides which flows are plausible.
 
 Intermediate responses must bind every required artifact under its declared
 key, either in structured JSON or an exact ``key = value``/``key: value`` text

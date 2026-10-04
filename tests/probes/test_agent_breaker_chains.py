@@ -1581,3 +1581,136 @@ def test_prompt_data_is_generic_and_contains_reviewed_chain_judge():
         assert (
             target_specific_term not in content
         ), "prompt data must remain target-agnostic"
+
+
+def _side_effecting_intermediate_policy():
+    return {
+        "allow_intermediate": True,
+        "allow_terminal": False,
+        "side_effecting": True,
+    }
+
+
+def test_side_effecting_intermediate_policy_is_rejected_by_default():
+    probe = _probe(
+        agent_config=_manifest(
+            _tool("upload", _side_effecting_intermediate_policy()),
+            _tool("sink", _terminal_policy()),
+        )
+    )
+    assert probe._tool_chain_policy("upload") is None, "opt-in policy must fail closed"
+    assert not probe._tool_is_intermediate("upload"), "rejected policy grants no role"
+
+
+def test_side_effecting_intermediate_policy_is_accepted_when_enabled():
+    probe = _probe(
+        allow_side_effecting_intermediates=True,
+        agent_config=_manifest(
+            _tool("upload", _side_effecting_intermediate_policy()),
+            _tool("sink", _terminal_policy()),
+        ),
+    )
+    assert probe._tool_is_intermediate("upload"), "enabled policy is an intermediate"
+    assert probe._tool_is_side_effecting_intermediate("upload")
+    assert not probe._tool_is_terminal("upload"), "a link must never be a terminal"
+    assert probe._sequence_policy_is_valid(["upload", "sink"])
+    assert not probe._sequence_policy_is_valid(["sink", "upload"])
+
+
+def test_tagger_keeps_side_effecting_intermediate_tags_when_enabled():
+    probe = _probe(
+        allow_side_effecting_intermediates=True,
+        agent_config=_manifest(
+            _tool("upload", _side_effecting_intermediate_policy()),
+            _tool("read", _intermediate_policy()),
+            _tool("sink", _terminal_policy()),
+        ),
+        agent_analysis={"tool_analyses": {}},
+    )
+    probe._prompts = {
+        "TOOL_TAGGING": "{agent_purpose}{tools_description}{per_tool_analyses}"
+    }
+    write_tag = _tag(capability_class="write_mutate", is_sink=True)
+    probe._get_model_response = MagicMock(
+        return_value=json.dumps(
+            {"tool_tags": {"upload": write_tag, "read": write_tag, "sink": write_tag}}
+        )
+    )
+    tags = probe._tag_tool_capabilities()
+    assert tags["upload"]["is_sink"] is True, "the honest side-effect tag is kept"
+    assert "read" not in tags, "read-only links must still be tagged read-only"
+    assert "sink" in tags
+
+
+def test_path_search_traverses_side_effecting_intermediates_when_enabled():
+    probe = _probe(
+        allow_side_effecting_intermediates=True,
+        agent_config=_manifest(
+            _tool("lookup", _intermediate_policy()),
+            _tool("upload", _side_effecting_intermediate_policy()),
+            _tool("review", _side_effecting_intermediate_policy()),
+            _tool("grant", _terminal_policy()),
+        ),
+    )
+    tags = {
+        "lookup": {"is_source": True, "is_sink": False},
+        "upload": {"is_source": True, "is_sink": True, "sink_severity": 2},
+        "review": {"is_source": False, "is_sink": True, "sink_severity": 3},
+        "grant": {"is_source": False, "is_sink": True, "sink_severity": 5},
+    }
+    edges = [
+        {"from": "lookup", "to": "upload", "confidence": 1.0},
+        {"from": "upload", "to": "review", "confidence": 1.0},
+        {"from": "review", "to": "grant", "confidence": 1.0},
+    ]
+    sequences = [path["sequence"] for path in probe._search_chains(edges, tags)]
+    assert ["lookup", "upload", "review", "grant"] in sequences
+    assert ["upload", "review", "grant"] in sequences, "a link may start a chain"
+    assert all(seq[-1] == "grant" for seq in sequences), "only terminals end chains"
+
+
+def test_all_pairs_edge_candidates_follow_exact_matches_within_budget():
+    tags = {
+        "source": {"produces": ["record_ref"], "consumes": []},
+        "pivot": {"produces": ["auth_context"], "consumes": ["record_id"]},
+        "sink": {"produces": [], "consumes": ["record_ref"]},
+    }
+    agent_config = _manifest(
+        _tool("source", _intermediate_policy()),
+        _tool("pivot", _intermediate_policy()),
+        _tool("sink", _terminal_policy()),
+    )
+    assert [
+        (edge["from"], edge["to"])
+        for edge in _probe(agent_config=agent_config)._build_capability_graph(tags)
+    ] == [("source", "sink")], "default mode must keep exact matching only"
+    edges = _probe(
+        agent_config=agent_config, edge_candidates="all_pairs"
+    )._build_capability_graph(tags)
+    pairs = [(edge["from"], edge["to"]) for edge in edges]
+    assert pairs[0] == ("source", "sink"), "exact matches must come first"
+    assert set(pairs) == {("source", "sink"), ("source", "pivot"), ("pivot", "sink")}
+    assert (
+        len(
+            _probe(
+                agent_config=agent_config,
+                edge_candidates="all_pairs",
+                max_graph_edges=2,
+            )._build_capability_graph(tags)
+        )
+        == 2
+    ), "all_pairs must respect the edge budget"
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {"allow_side_effecting_intermediates": "yes"},
+        {"allow_side_effecting_intermediates": 1},
+        {"edge_candidates": "fuzzy"},
+        {"edge_candidates": None},
+    ],
+)
+def test_opt_in_chain_options_reject_invalid_values(attributes):
+    with pytest.raises(PluginConfigurationError):
+        _probe(**attributes)._validate_safety_configuration()
