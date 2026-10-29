@@ -927,7 +927,7 @@ class ToolChain(AgentBreaker):
         "max_graph_edges": 128,  # candidate edges sent for scoring, label matches first
         "min_edge_confidence": 0.4,  # scored edges below this are discarded
         "max_path_expansions": 1024,  # search steps spent enumerating paths
-        "max_chain_len": 4,  # tools in one path, including the sink
+        "max_chain_len": 4,  # tools in one path, including the sink; 1 = sink alone
         "max_paths": 8,  # paths kept after chain selection, applied last
         # Chain selection: "relevance" drops chains that are just the agent's
         # authorized job, then keeps the highest-scoring; "shortest" and
@@ -1127,7 +1127,7 @@ class ToolChain(AgentBreaker):
     def _sequence_is_valid(self, sequence: list) -> bool:
         """Require distinct tagged tools ending at a sink; earlier sinks may be links."""
         return (
-            len(sequence) >= 2
+            len(sequence) >= 1
             and len(set(sequence)) == len(sequence)
             and all(tool in self.tool_tags for tool in sequence)
             and self._tool_is_sink(sequence[-1])
@@ -1520,9 +1520,14 @@ class ToolChain(AgentBreaker):
         if not isinstance(self.agent_analysis, dict):
             return {"chains": [], "priority_chains": []}
         self.tool_tags = self._tag_tool_capabilities()
-        candidates = self._build_capability_graph(self.tool_tags)
-        edges = self._score_edges(candidates) if candidates else []
-        paths = self._search_chains(edges, self.tool_tags) if edges else []
+        if self.max_chain_len == 1:
+            # one-tool paths need no data-flow graph, so skip the edge scoring
+            candidates, edges = [], []
+            paths = self._search_chains(edges, self.tool_tags)
+        else:
+            candidates = self._build_capability_graph(self.tool_tags)
+            edges = self._score_edges(candidates) if candidates else []
+            paths = self._search_chains(edges, self.tool_tags) if edges else []
         found_count = len(paths)
         paths = self._select_paths(paths) if paths else []
         logging.info(
@@ -1862,8 +1867,10 @@ class ToolChain(AgentBreaker):
 
     def _search_chains(self, edges: List[dict], tool_tags: dict) -> List[dict]:
         """Find bounded acyclic tool-chain paths, best score first, uncapped."""
-        if self.max_chain_len < 2 or self.max_paths == 0:
+        if self.max_chain_len < 1 or self.max_paths == 0:
             return []
+        if self.max_chain_len == 1:
+            return self._single_tool_paths(tool_tags)
 
         adjacency: dict = {}
         for edge in edges:
@@ -1937,6 +1944,25 @@ class ToolChain(AgentBreaker):
             self.__class__.__name__,
             expansions,
             len(paths),
+        )
+        return paths
+
+    def _single_tool_paths(self, tool_tags: dict) -> List[dict]:
+        """With ``max_chain_len`` 1 every sink is a path of its own, no edges."""
+        paths = []
+        for tool, tags in tool_tags.items():
+            tags = tags or {}
+            if not tags.get("is_sink"):
+                continue
+            severity = tags.get("sink_severity", 1)
+            if type(severity) is not int or not 1 <= severity <= 5:
+                severity = 1
+            paths.append({"score": float(severity), "sequence": [tool], "edges": []})
+        paths.sort(key=lambda path: path["score"], reverse=True)
+        logging.info(
+            "%s # Single-tool paths: %s",
+            self.__class__.__name__,
+            [path["sequence"][0] for path in paths],
         )
         return paths
 

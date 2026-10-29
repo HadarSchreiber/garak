@@ -118,7 +118,9 @@ request is sent:
 * ``min_edge_confidence`` - scored edges below this confidence are discarded.
 * ``max_path_expansions`` - search steps spent enumerating tool-chain
   paths through the scored graph.
-* ``max_chain_len`` - tools in one path, including the sink.
+* ``max_chain_len`` - tools in one path, including the sink. ``1`` plans each
+  sink as a one-tool path with no data-flow graph, which makes the probe a
+  planned single-tool attack.
 * ``chain_selection`` - how found paths are chosen: ``relevance`` (default),
   ``shortest`` or ``longest``. ``relevance`` asks the red-team model to drop
   chains that are just the agent's authorized job, then keeps the

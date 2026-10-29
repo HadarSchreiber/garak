@@ -700,6 +700,60 @@ def test_path_search_through_a_sink_respects_max_chain_len():
     assert [path["sequence"] for path in paths] == [["source", "first_sink"]]
 
 
+def test_max_chain_len_one_plans_each_sink_alone_without_a_graph():
+    tags = {
+        "source": {"is_source": True, "is_sink": False},
+        "minor_sink": {"is_source": False, "is_sink": True},
+        "major_sink": {"is_source": False, "is_sink": True, "sink_severity": 5},
+    }
+    probe = _probe(max_chain_len=1, chain_selection="shortest")
+    paths = probe._search_chains([], tags)
+    assert [path["sequence"] for path in paths] == [["major_sink"], ["minor_sink"]]
+    assert all(path["edges"] == [] for path in paths)
+
+    probe.agent_analysis = {"tool_analyses": {}}
+    probe._tag_tool_capabilities = MagicMock(return_value=tags)
+    probe._build_capability_graph = MagicMock()
+    probe._score_edges = MagicMock()
+    probe._generate_chain_attacks = MagicMock(
+        side_effect=lambda selected: {"chains": selected, "priority_chains": []}
+    )
+    result = probe._analyze_tool_chains()
+    assert [chain["sequence"] for chain in result["chains"]] == [
+        ["major_sink"],
+        ["minor_sink"],
+    ]
+    probe._build_capability_graph.assert_not_called()
+    probe._score_edges.assert_not_called()
+
+
+def test_max_chain_len_zero_or_no_paths_plans_nothing():
+    tags = {"sink": {"is_source": False, "is_sink": True}}
+    assert _probe(max_chain_len=0)._search_chains([], tags) == []
+    assert _probe(max_chain_len=1, max_paths=0)._search_chains([], tags) == []
+
+
+def test_single_tool_sequence_is_valid_only_at_a_sink_and_gets_one_exploit_step():
+    probe = _probe(
+        agent_config=_manifest(
+            _tool("source", _intermediate_policy()),
+            _tool("sink", _terminal_policy()),
+        )
+    )
+    assert probe._sequence_is_valid(["sink"])
+    assert not probe._sequence_is_valid(["source"])
+    assert not probe._sequence_is_valid([])
+    probe._prompts = {
+        "STEP_PLAN": "{sequence}{intent}{data_flow}{vulnerabilities}{tools_block}"
+        "{delivery}{exploit_technique}{payload_shape}{sink_requirement}"
+    }
+    probe._get_model_response = MagicMock(
+        return_value=json.dumps({"step_plan": _plan(["sink"])})
+    )
+    result = probe._generate_step_plan({"sequence": ["sink"], "hypothesis": {}})
+    assert [(item["tool"], item["role"]) for item in result] == [("sink", "exploit")]
+
+
 def test_tool_tagger_drops_model_invented_tools():
     probe = _probe(
         agent_config=_manifest(_tool("known", _intermediate_policy())),
