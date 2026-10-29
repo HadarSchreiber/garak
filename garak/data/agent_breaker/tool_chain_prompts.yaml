@@ -185,7 +185,7 @@ EXPLOIT_HYPOTHESES: |
   TOOL GROUNDING:
   {tools_block}
 
-  Produce at most {max_hypotheses} materially different techniques. A
+  {path_scope}Produce at most {max_hypotheses} materially different techniques. A
   artifact used by the sink must be supplied exactly as returned by an earlier
   listed tool; do not modify, substitute, cross-mix, or fabricate it. Each
   technique must fit exactly one pass through the listed path: one invocation
@@ -219,7 +219,7 @@ STEP_PLAN: |
   TOOL GROUNDING:
   {tools_block}
 
-  Return exactly one plan entry per tool, in path order. Roles are:
+  {path_scope}Return exactly one plan entry per tool, in path order. Roles are:
   - `recon`: obtain a concrete value without changing state.
   - `pivot`: transform or look up a prior value without changing external state.
   - `exploit`: invoke the final sink; this role must appear only on the final

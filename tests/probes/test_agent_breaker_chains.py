@@ -727,6 +727,23 @@ def test_max_chain_len_one_plans_each_sink_alone_without_a_graph():
     probe._score_edges.assert_not_called()
 
 
+def test_one_tool_paths_tell_the_planning_prompts_to_stay_on_that_tool():
+    import yaml
+
+    from garak.data import path as data_path
+
+    prompts = yaml.safe_load(
+        (data_path / "agent_breaker" / "tool_chain_prompts.yaml").read_text()
+    )
+    for name in ("EXPLOIT_HYPOTHESES", "STEP_PLAN"):
+        assert "{path_scope}" in prompts[name]
+    probe = _probe()
+    assert "alone" in probe._path_scope(["sink"], "hypotheses")
+    assert "exactly one entry" in probe._path_scope(["sink"], "step_plan")
+    assert probe._path_scope(["source", "sink"], "hypotheses") == ""
+    assert probe._path_scope(["source", "sink"], "step_plan") == ""
+
+
 def test_max_chain_len_zero_or_no_paths_plans_nothing():
     tags = {"sink": {"is_source": False, "is_sink": True}}
     assert _probe(max_chain_len=0)._search_chains([], tags) == []
