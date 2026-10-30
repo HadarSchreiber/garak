@@ -120,7 +120,8 @@ request is sent:
   paths through the scored graph.
 * ``max_chain_len`` - tools in one path, including the sink. ``1`` plans each
   sink as a one-tool path with no data-flow graph, which makes the probe a
-  planned single-tool attack.
+  planned single-tool attack. It also lets a one-tool manifest run; otherwise
+  the probe needs at least two chainable tools.
 * ``chain_selection`` - how found paths are chosen: ``relevance`` (default),
   ``shortest`` or ``longest``. ``relevance`` asks the red-team model to drop
   chains that are just the agent's authorized job, then keeps the

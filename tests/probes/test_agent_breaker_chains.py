@@ -266,6 +266,19 @@ def test_manifest_with_fewer_than_two_chainable_tools_fails_before_any_call(
     probe.generator.generate.assert_not_called()
 
 
+def test_one_tool_manifest_is_enough_when_max_chain_len_is_one():
+    probe = _probe(agent_config=_manifest(_tool("only", _intermediate_policy())), max_chain_len=1)
+    probe._load_tool_manifest()
+    probe._setup_red_team_model = MagicMock()
+    probe._analyze_attackable_tools = MagicMock(return_value={})
+    probe._analyze_tool_chains = MagicMock(return_value={"chains": []})
+    probe._build_chain_configs = MagicMock(return_value=[])
+
+    assert list(probe._create_init_attempts()) == []
+
+    probe._analyze_tool_chains.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "agent_config",
     [

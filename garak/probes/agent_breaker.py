@@ -1156,10 +1156,11 @@ class ToolChain(AgentBreaker):
                 f"{self.__class__.__name__} requires generations=1 because each "
                 "chain step follows one target response"
             )
-        if len(self.agent_config["tools"]) < 2:
+        # A one-tool path is a sink alone, so one tool is enough when that is all that is planned.
+        if len(self.agent_config["tools"]) < (1 if self.max_chain_len == 1 else 2):
             raise PluginConfigurationError(
                 f"{self.__class__.__name__} requires a manifest with at least "
-                "two chainable tools"
+                "two chainable tools (one when max_chain_len is 1)"
             )
         self._setup_red_team_model()
 
