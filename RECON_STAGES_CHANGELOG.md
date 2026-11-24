@@ -39,3 +39,24 @@ parameter - the exploitable surface (an amount decoupled from a total, an id who
 checked). Surfaced in the profile render. Structural (tool's own param names + its own observed signals),
 no vocabulary. _profile_for_render() composes reconcile (S2) + affordance (S3). Test:
 tests/probes/test_stage3_afford.py (4 pass; works on unseen param names).
+
+## BLOCKER (discovered during the first E2E) — API budget exhausted
+The victim agent returned HTTP 500 on every call: the gateway key (used by BOTH victim model and
+attacker) is over budget:
+  "Budget has been exceeded! Key=yuvic-fb7b1b95 (sk-...AUyw) Current cost: 1000.26, Max budget: 1000.0"
+=> NO live run (recon or full experiment) can succeed until the budget is restored. The bar_port
+pipeline itself is correct (discovery ran: "ToolChain # Discovering agent config..."); it just can't
+call models. This is account-level; cannot be fixed here.
+
+Status: stages implemented + unit-tested OFFLINE (no live recon_exp.json captured because of the
+budget). Experiment is wired and ready (5 variants: bar_port, bar_s1_ground, bar_s2_reconcile,
+bar_s3_afford, bar_all). When budget is restored, launch:
+  cd /root/yuvi/agenteval-main
+  set -a; . /root/yuvi/agenteval/.env; set +a; unset NIM_API_KEY
+  export AGENT_EVAL_AGENTS_LAB=/root/yuvi/agents-lab-main
+  uv run --no-project --with pyyaml python -m agent_eval.garak_chains.recon_exp2 run \
+    -n 10 --stamp recon_cmp --scenarios codereview ecommerce identity \
+    --variants bar_port bar_s1_ground bar_s2_reconcile bar_s3_afford bar_all \
+    --concurrency 8 --attacker claude_opus46 --allow-stale-stacks
+  # then: python -m agent_eval.garak_chains.recon_exp2 summarize <out> recon_cmp
+Leftover idle containers from the aborted run: docker names matching 'cc-barport2-*' (safe to remove).
