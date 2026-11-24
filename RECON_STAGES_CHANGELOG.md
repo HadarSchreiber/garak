@@ -31,3 +31,11 @@ no vocabulary. Test: tests/probes/test_stage2_reconcile.py (3 pass).
 Each improvement is env-gated via `_stage_enabled("<NAME>")` reading AB_STAGE_<NAME> (default off), so
 the recon_exp2 harness can A/B each stage as its own variant (bar_port baseline vs +stage) with one
 probe and no code fork. Stage 1 = AB_STAGE_GROUND; Stage 2 = AB_STAGE_RECONCILE.
+
+## Stage 3 — free-parameter / affordance detection (AB_STAGE_AFFORD)
+`_free_parameters(profile, observations)`: a required parameter the recon never saw validated (no
+refusal/error/constraint text references it) is a CANDIDATE free (caller-controlled, server-unvalidated)
+parameter - the exploitable surface (an amount decoupled from a total, an id whose ownership is never
+checked). Surfaced in the profile render. Structural (tool's own param names + its own observed signals),
+no vocabulary. _profile_for_render() composes reconcile (S2) + affordance (S3). Test:
+tests/probes/test_stage3_afford.py (4 pass; works on unseen param names).
