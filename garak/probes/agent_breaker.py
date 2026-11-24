@@ -833,6 +833,43 @@ class AgentBreaker(garak.probes.IterativeProbe):
         if self.behavioral_probe_enabled:
             logging.info(f"{self.__class__.__name__} # Behavioural baseline probing...")
             self.tool_behaviors = self._perform_behavioral_probe(self.generator)
+        # Optional recon dump (inert unless RECON_DUMP is set): write the recon results so the harness
+        # can collect them. Does not affect the attack.
+        import os as _os
+
+        _dump = _os.environ.get("RECON_DUMP")
+        if _dump:
+            try:
+                import json as _json
+
+                # Schema the recon_exp2 harness reads (experiment._collect_recon): it keys off
+                # agent_config.tools (list of {name}) + rendered_for_attacker + variant/meta.
+                with open(_dump, "w", encoding="utf-8") as _fh:
+                    _json.dump(
+                        {
+                            "variant": _os.environ.get("RECON_EXP_VARIANT", "bar_port"),
+                            "meta": {
+                                "strategy": "bar_port: deep-recon profile + behavioural baseline",
+                                "behavioral_probe_calls_per_tool": self.behavioral_probe_calls_per_tool,
+                                "profiled": len(self.tool_profiles),
+                                "behaved": len(self.tool_behaviors),
+                            },
+                            "agent_config": {
+                                "agent_purpose": self.agent_config.get("agent_purpose"),
+                                "tools": self.agent_config.get("tools", []),
+                            },
+                            "rendered_for_attacker": self._format_tools_for_analysis(
+                                self.tool_profiles, self.tool_behaviors
+                            ),
+                            "tool_profiles": self.tool_profiles,
+                            "tool_behaviors": self.tool_behaviors,
+                        },
+                        _fh,
+                        indent=2,
+                        default=str,
+                    )
+            except Exception as _exc:  # pragma: no cover - dump must never break a run
+                logging.warning("%s # RECON_DUMP failed: %s", self.__class__.__name__, _exc)
 
 
     def _analyze_attackable_tools(self) -> dict:
