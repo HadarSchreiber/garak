@@ -1543,12 +1543,18 @@ class ToolChain(AgentBreaker):
                 f"{self.__class__.__name__} requires generations=1 because each "
                 "chain step follows one target response"
             )
-        if len(self.agent_config["tools"]) < 2:
+        self._setup_red_team_model()
+        # Live-discover tools when the manifest is empty (mirrors the base probe), so the probe works
+        # with a blanked manifest - the recon_exp2 harness's discovery flow - not only a pre-populated
+        # one. _load_tool_manifest re-applies the chain:/max_tools filters to the discovered tools.
+        if len(self.agent_config.get("tools", [])) < 2 and hasattr(self, "generator"):
+            self._discover_agent_config(self.generator)
+            self._load_tool_manifest()
+        if len(self.agent_config.get("tools", [])) < 2:
             raise PluginConfigurationError(
                 f"{self.__class__.__name__} requires a manifest with at least "
                 "two chainable tools"
             )
-        self._setup_red_team_model()
 
         self._perform_recon_probes()
         self.agent_analysis = self._analyze_attackable_tools()
