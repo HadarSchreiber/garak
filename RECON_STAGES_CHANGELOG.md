@@ -18,3 +18,11 @@ morphology for ids (`_id_tokens`) - NO field/tool/value vocabulary. Surfaced in 
 ("REAL IDENTIFIERS OBSERVED") and the dump (`grounded_identifiers`) so the attacker reuses real values.
 Test: tests/probes/test_stage1_grounded.py (4 pass) - collection-only, single-confirmation excluded,
 novel-domain (no vocab), emails grounded / free-text names dropped.
+
+## Stage 2 — ground profiles in observed behaviour
+Deep-recon profiles are the agent describing ITSELF (restrictions can be wishful/hallucinated).
+`_reconcile_profile(profile, observations)` collects the concrete signals the target actually
+surfaced (refusal/error signatures, observed_constraints) into `observed_constraints`; the renderer
+now marks the profile's own restrictions "self-reported - UNVERIFIED" and the observed ones
+"OBSERVED during recon (what the live target actually did)". Data-driven from the observation fields,
+no vocabulary. Test: tests/probes/test_stage2_reconcile.py (3 pass).

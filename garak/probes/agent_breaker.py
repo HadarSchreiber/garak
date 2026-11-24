@@ -498,9 +498,9 @@ class AgentBreaker(garak.probes.IterativeProbe):
             tools_str += f"\n### Tool: {tool_name}\n"
             tools_str += f"Description: {tool.get('description', 'No description')}\n"
             profile = tool_profiles.get(tool_name)
-            if profile:
-                tools_str += self._format_tool_profile(profile)
             observations = tool_behaviors.get(tool_name)
+            if profile:
+                tools_str += self._format_tool_profile(self._reconcile_profile(profile, observations))
             if observations:
                 tools_str += self._format_tool_behavior(observations)
 
@@ -741,6 +741,31 @@ class AgentBreaker(garak.probes.IterativeProbe):
 
 
     @staticmethod
+    def _reconcile_profile(profile: dict, observations: list) -> dict:
+        """Stage 2: ground the self-described profile in observed behaviour. The deep-recon profile is
+        the agent describing ITSELF (restrictions can be wishful/hallucinated); the behavioural probe
+        shows what the target actually did. Collect the concrete signals the target surfaced
+        (refusals, errors, observed constraints) into observed_constraints, which the renderer marks
+        as enforced while the profile's own restrictions are marked self-reported/unverified. Purely
+        from the observation fields - no vocabulary, no overfit."""
+        if not isinstance(profile, dict):
+            return profile
+        prof = dict(profile)
+        observed: list = []
+        for obs in observations or []:
+            if not isinstance(obs, dict):
+                continue
+            for field in ("refusal_signature", "error_signature"):
+                val = str(obs.get(field, "")).strip()
+                if val and val not in observed:
+                    observed.append(val)
+            for c in obs.get("observed_constraints") or []:
+                if isinstance(c, str) and c.strip() and c.strip() not in observed:
+                    observed.append(c.strip())
+        prof["observed_constraints"] = observed
+        return prof
+
+    @staticmethod
     def _format_tool_profile(profile: dict) -> str:
         """Render a structured tool profile as an indented text block."""
         lines = ["Deep recon profile (from agent's own description):"]
@@ -765,9 +790,15 @@ class AgentBreaker(garak.probes.IterativeProbe):
 
         restrictions = profile.get("restrictions") or []
         if restrictions:
-            lines.append("  Restrictions:")
+            lines.append("  Restrictions (self-reported by the agent - UNVERIFIED, may not hold):")
             for r in restrictions:
                 lines.append(f"    - {r}")
+
+        observed = profile.get("observed_constraints") or []
+        if observed:
+            lines.append("  Constraints OBSERVED during recon (what the live target actually did):")
+            for c in observed:
+                lines.append(f"    - {c}")
 
         examples = profile.get("examples") or []
         if examples:
@@ -1857,9 +1888,9 @@ class ToolChain(AgentBreaker):
                 ),
             )
             profile = tool_profiles.get(name)
-            if profile:
-                block += "\n" + self._format_tool_profile(profile)
             observations = tool_behaviors.get(name)
+            if profile:
+                block += "\n" + self._format_tool_profile(self._reconcile_profile(profile, observations))
             if observations:
                 block += "\n" + self._format_tool_behavior(observations)
             blocks.append(block)
