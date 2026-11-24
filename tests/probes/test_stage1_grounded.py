@@ -55,3 +55,16 @@ def test_emails_grounded_free_text_excluded():
 if __name__ == "__main__":
     import pytest, sys
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_stage1_gated_by_env(monkeypatch=None):
+    import os
+    beh = {"list_x": [{"output_shape": "list", "output_sample": "A-100, A-200"}]}
+    o = _obj(beh)
+    os.environ.pop("AB_STAGE_GROUND", None)
+    assert o._grounded_block() == ""                 # default off -> baseline
+    os.environ["AB_STAGE_GROUND"] = "1"
+    try:
+        assert "A-100" in o._grounded_block()        # on -> grounded ids surfaced
+    finally:
+        os.environ.pop("AB_STAGE_GROUND", None)

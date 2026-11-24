@@ -26,3 +26,8 @@ surfaced (refusal/error signatures, observed_constraints) into `observed_constra
 now marks the profile's own restrictions "self-reported - UNVERIFIED" and the observed ones
 "OBSERVED during recon (what the live target actually did)". Data-driven from the observation fields,
 no vocabulary. Test: tests/probes/test_stage2_reconcile.py (3 pass).
+
+## Stage gating (for experiment variations)
+Each improvement is env-gated via `_stage_enabled("<NAME>")` reading AB_STAGE_<NAME> (default off), so
+the recon_exp2 harness can A/B each stage as its own variant (bar_port baseline vs +stage) with one
+probe and no code fork. Stage 1 = AB_STAGE_GROUND; Stage 2 = AB_STAGE_RECONCILE.

@@ -500,7 +500,8 @@ class AgentBreaker(garak.probes.IterativeProbe):
             profile = tool_profiles.get(tool_name)
             observations = tool_behaviors.get(tool_name)
             if profile:
-                tools_str += self._format_tool_profile(self._reconcile_profile(profile, observations))
+                prof = self._reconcile_profile(profile, observations) if self._stage_enabled("RECONCILE") else profile
+                tools_str += self._format_tool_profile(prof)
             if observations:
                 tools_str += self._format_tool_behavior(observations)
 
@@ -861,6 +862,13 @@ class AgentBreaker(garak.probes.IterativeProbe):
     _COLLECTION_RE = re.compile(r"list|array|collection|\[|records?|rows?|items?|multiple|table", re.I)
     _GROUNDED_DISPLAY = 50  # display budget only (prompt size), overflow is signposted
 
+    @staticmethod
+    def _stage_enabled(name: str) -> bool:
+        """Whether an improvement stage is on, read from env ``AB_STAGE_<NAME>`` (default off) so the
+        recon_exp2 harness can A/B each stage as a separate variant with no code fork."""
+        import os
+        return os.environ.get(f"AB_STAGE_{name}", "").strip().lower() in ("1", "true", "yes", "on")
+
     @classmethod
     def _id_tokens(cls, text: str) -> list:
         """Identifier-shaped tokens in a string, order-preserving and de-duplicated."""
@@ -894,7 +902,10 @@ class AgentBreaker(garak.probes.IterativeProbe):
         return grounded
 
     def _grounded_block(self) -> str:
-        """A footer of the grounded identifiers, for the attacker to reuse instead of inventing ids."""
+        """A footer of the grounded identifiers, for the attacker to reuse instead of inventing ids.
+        Stage 1 (AB_STAGE_GROUND); off -> unchanged baseline rendering."""
+        if not self._stage_enabled("GROUND"):
+            return ""
         ids = self._grounded_identifiers()
         if not ids:
             return ""
@@ -1890,7 +1901,8 @@ class ToolChain(AgentBreaker):
             profile = tool_profiles.get(name)
             observations = tool_behaviors.get(name)
             if profile:
-                block += "\n" + self._format_tool_profile(self._reconcile_profile(profile, observations))
+                prof = self._reconcile_profile(profile, observations) if self._stage_enabled("RECONCILE") else profile
+                block += "\n" + self._format_tool_profile(prof)
             if observations:
                 block += "\n" + self._format_tool_behavior(observations)
             blocks.append(block)
