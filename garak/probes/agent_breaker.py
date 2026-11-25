@@ -932,10 +932,15 @@ class AgentBreaker(garak.probes.IterativeProbe):
 
     @staticmethod
     def _stage_enabled(name: str) -> bool:
-        """Whether an improvement stage is on, read from env ``AB_STAGE_<NAME>`` (default off) so the
-        recon_exp2 harness can A/B each stage as a separate variant with no code fork."""
+        """Whether a recon-grounding stage is on. This is the GROUNDED build: the stages (GROUND /
+        RECONCILE / AFFORD) are ON by default, so the attacker is shown the real identifiers the
+        target returned, observed-vs-reported constraints, and candidate free parameters. Set
+        ``AB_STAGE_<NAME>`` to a falsey value (0/false/no/off) to disable a stage explicitly."""
         import os
-        return os.environ.get(f"AB_STAGE_{name}", "").strip().lower() in ("1", "true", "yes", "on")
+        val = os.environ.get(f"AB_STAGE_{name}")
+        if val is None or not val.strip():
+            return True  # grounded-by-default
+        return val.strip().lower() in ("1", "true", "yes", "on")
 
     @classmethod
     def _id_tokens(cls, text: str) -> list:
