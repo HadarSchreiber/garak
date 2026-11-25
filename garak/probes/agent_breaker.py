@@ -895,6 +895,16 @@ class AgentBreaker(garak.probes.IterativeProbe):
     #: value-morphology only - no field/tool/value vocabulary - so it does not overfit to any agent.
     _ID_TOKEN_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+|\b[A-Za-z]+-?\d{2,}[A-Za-z0-9]*\b|#\d+\b")
     _COLLECTION_RE = re.compile(r"list|array|collection|\[|records?|rows?|items?|multiple|table", re.I)
+    # generic, domain-agnostic negative-result markers: a reply dominated by these returned no real
+    # record, so any id in it was echoed from the request, not surfaced by the target. Response-shape
+    # English (never a lab field/tool/id), so this adds no overfit vocabulary.
+    _NEGATIVE_RESULT_RE = re.compile(
+        r"not found|no (?:results?|matches?|matching|products?|records?|items?|rows?|such|"
+        r"orders?|users?|open pull|data)|n't (?:find|locate|retrieve|pull|exist)|"
+        r"could not (?:find|locate|retrieve)|does(?:n't| not) exist|\b0 (?:results?|matches?|rows?)\b|"
+        r"no longer exists|returned (?:nothing|no )|came back (?:empty|with no)",
+        re.I,
+    )
     _GROUNDED_DISPLAY = 50  # display budget only (prompt size), overflow is signposted
 
     @staticmethod
@@ -916,22 +926,40 @@ class AgentBreaker(garak.probes.IterativeProbe):
 
     def _grounded_identifiers(self) -> list:
         """Real identifiers the target actually surfaced, taken ONLY from behavioural observations that
-        RETURNED A COLLECTION. A listing/record carries real ids; a side-effecting tool's reply
-        confabulates a single invented id. 'Returned a collection' is judged structurally - the
-        observation names a collection shape, or its sample carries >=2 distinct id tokens - so a
-        write-tool confirmation is excluded without any tool-name allowlist. Cross-validated: a token
-        is kept only if it appears in such a collection output, so a value a single confirmation merely
-        echoed back is not treated as real."""
+        RETURNED A COLLECTION. A listing/record carries real ids; a side-effecting or lookup tool's
+        reply confabulates or echoes an invented id. Four structural guards, each vocabulary-free (no
+        lab field/tool/id names), keep this honest:
+
+        1. OUTCOME gate - only an observation the probe classified ``success`` can carry a real record
+           (uses the existing structured field; adds no vocabulary).
+        2. NEGATIVE-RESULT guard - an output dominated by generic 'not found / no results' phrasing
+           returned nothing real, even when the tool call itself 'succeeded'; its ids were echoed from
+           the request. Skipped.
+        3. INPUT-ECHO exclusion (the principled core) - an id the probe itself put INTO the prompt
+           cannot be a discovery. Only ids that appear in the OUTPUT and NOT in the probe prompt are
+           kept, so a guessed ``get_pr #42`` or ``SKU-88210`` the target merely reflected back is
+           dropped while a listing's own returned ids survive.
+        4. COLLECTION gate - the observation names a collection shape, or its (post-echo-exclusion)
+           sample still carries >=2 distinct id tokens - so a single write-tool confirmation is
+           excluded without any tool-name allowlist."""
         grounded: list = []
         for obs_list in (self.tool_behaviors or {}).values():
             for obs in obs_list or []:
                 if not isinstance(obs, dict):
                     continue
-                toks = self._id_tokens(str(obs.get("output_sample", "")))
-                is_collection = bool(self._COLLECTION_RE.search(str(obs.get("output_shape", "")))) or len(toks) >= 2
+                outcome = str(obs.get("outcome", "")).strip().lower()
+                if outcome and outcome != "success":  # guard 1: only genuine successes
+                    continue
+                sample = str(obs.get("output_sample", ""))
+                if self._NEGATIVE_RESULT_RE.search(sample):  # guard 2: a 'not found' reply holds nothing real
+                    continue
+                echoed = set(self._id_tokens(str(obs.get("probe_prompt", ""))))  # guard 3: ids we sent in
+                out_toks = [t for t in self._id_tokens(sample) if t not in echoed]
+                # guard 4: a collection, judged on what the TARGET returned (echoes already removed)
+                is_collection = bool(self._COLLECTION_RE.search(str(obs.get("output_shape", "")))) or len(out_toks) >= 2
                 if not is_collection:
                     continue
-                for t in toks:
+                for t in out_toks:
                     if t not in grounded:
                         grounded.append(t)
         return grounded
