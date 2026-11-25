@@ -2000,9 +2000,15 @@ class ToolChain(AgentBreaker):
             next_attempt = self._handle_stepwise_refinement(state)
         return [next_attempt] if next_attempt is not None else []
 
-    def _format_tools_for_analysis(self, tool_profiles=None, tool_behaviors=None) -> str:
+    def _format_tools_for_analysis(self, tool_profiles=None, tool_behaviors=None, only=None) -> str:
         """Render bounded configured tool descriptions for the attacker model, enriched with the
-        deep-recon profile and observed benign behaviour when recon has produced them."""
+        deep-recon profile and observed benign behaviour when recon has produced them.
+
+        ``only`` (a set of tool names) restricts the rendering to those tools. Per-chain helper
+        prompts (relevance, hypotheses, step plan) pass the chain's own tools: rendering every tool
+        enriched overflows the 32000-char helper limit on agents with many tools (9+), which drops
+        the whole chain. A chain prompt only needs the tools in that chain, so this both fits the
+        limit and focuses the model."""
         tool_profiles = tool_profiles or {}
         tool_behaviors = tool_behaviors or {}
         blocks = []
@@ -2010,6 +2016,8 @@ class ToolChain(AgentBreaker):
             if not isinstance(tool, dict):
                 continue
             name = tool.get("name", "unnamed")
+            if only is not None and name not in only:
+                continue
             block = "### Tool: {name}\nDescription: {description}".format(
                 name=name,
                 description=self._bounded_text(
@@ -2643,12 +2651,13 @@ class ToolChain(AgentBreaker):
             f"{self._bounded_text(self._format_chain_data_flow(path['edges']), self._FIELD_CHAR_LIMIT)}"
             for index, path in enumerate(batch, start=1)
         )
+        batch_tools = {tool for path in batch for tool in (path.get("sequence") or [])}
         prompt = self._prompts["CHAIN_RELEVANCE"].format(
             agent_purpose=self._bounded_text(
                 self.agent_config.get("agent_purpose", "Unknown purpose"),
                 self._FIELD_CHAR_LIMIT,
             ),
-            tools_block=self._format_tools_for_analysis(self.tool_profiles, self.tool_behaviors),
+            tools_block=self._format_tools_for_analysis(self.tool_profiles, self.tool_behaviors, only=batch_tools),
             chains=chains_block,
         )
         response = self._get_helper_model_response(prompt)
@@ -2731,7 +2740,7 @@ class ToolChain(AgentBreaker):
             sink_tags=json.dumps(self.tool_tags.get(sequence[-1], {}), indent=2),
             data_flow=chain.get("data_flow", ""),
             vulnerabilities=chain.get("vulnerabilities", ""),
-            tools_block=self._format_tools_for_analysis(self.tool_profiles, self.tool_behaviors),
+            tools_block=self._format_tools_for_analysis(self.tool_profiles, self.tool_behaviors, only=set(sequence)),
             max_hypotheses=self.max_hypotheses_per_chain,
         )
         path = " -> ".join(sequence)
@@ -2915,7 +2924,7 @@ class ToolChain(AgentBreaker):
             intent=chain.get("intent", ""),
             data_flow=chain.get("data_flow", ""),
             vulnerabilities=chain.get("vulnerabilities", ""),
-            tools_block=self._format_tools_for_analysis(self.tool_profiles, self.tool_behaviors),
+            tools_block=self._format_tools_for_analysis(self.tool_profiles, self.tool_behaviors, only=set(sequence)),
             delivery=chain.get("delivery", "direct"),
             exploit_technique=hypothesis.get("technique", ""),
             payload_shape=hypothesis.get("payload_shape", ""),
