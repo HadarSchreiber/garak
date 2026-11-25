@@ -523,3 +523,18 @@ HELPER_RESERVED_CONTROL_MARKERS:
   - "helper-generated request:"
   - "use only the manifest tool named exactly"
   - "do not use or invoke any other tool"
+
+# The blocks below are used only when the matching ToolChain robustness switch
+# is enabled; ToolChain._apply_robustness_switches weaves each one into the
+# sentence of the prompt above that it changes. With every switch off the
+# prompts above are used unchanged.
+
+CHECK_STEP_REQUEST_DEFERRAL: |
+  DEFERRED VALUES ARE NOT INVENTED VALUES:
+  A request that lacks a concrete identifier is consistent when it explicitly
+  asks the target to supply, look up, or confirm that value, for example by
+  describing the needed object by attribute or role and asking for the
+  resulting value back. Do not treat such deferral as inventing an
+  identifier. Return consistent=false for a missing identifier only when the
+  request asserts a specific concrete value that has no provenance in
+  AVAILABLE ARTIFACTS or in the target's prior responses.

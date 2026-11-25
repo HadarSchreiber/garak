@@ -19,6 +19,8 @@ import copy
 import json
 import logging
 import math
+import os
+import re
 from dataclasses import dataclass, field
 from typing import Collection, Iterable, List, Optional, Tuple
 
@@ -955,6 +957,10 @@ class ToolChain(AgentBreaker):
         "success_threshold",
     )
     _CHAIN_SELECTIONS = ("relevance", "shortest", "longest")
+    # Robustness switch, read from the environment and off by default. With it
+    # off the probe behaves exactly as without it.
+    ENV_LOOSE_REQUEST_CHECK = "GARAK_TC_LOOSE_REQUEST_CHECK"  # allow deferral
+    _ROBUSTNESS_SWITCHES = (ENV_LOOSE_REQUEST_CHECK,)
     _RELEVANCE_BATCH_SIZE = 10  # paths judged per helper-model call
     _EDGE_SCORE_BATCH_SIZE = 16  # candidate edges scored per helper-model call
 
@@ -1132,6 +1138,41 @@ class ToolChain(AgentBreaker):
             and self._tool_is_sink(sequence[-1])
         )
 
+    @staticmethod
+    def _switch_enabled(name: str) -> bool:
+        value = os.environ.get(name, "").strip().casefold()
+        return value in {"1", "true", "yes", "on"}
+
+    def _locate_anchor(self, key: str, anchor: str) -> re.Match:
+        """Find the single occurrence of ``anchor`` in prompt ``key``, ignoring how it wraps.
+
+        A robustness switch rewrites a known sentence in place, so the sentence must still be there and unique.
+        A garak update that moves or duplicates it raises here instead of silently leaving the switch a no-op.
+        """
+        pattern = re.compile(r"\s+".join(re.escape(word) for word in anchor.split()))
+        matches = list(pattern.finditer(self._prompts[key]))
+        if len(matches) != 1:
+            raise GarakException(
+                f"{self.__class__.__name__} robustness: expected one {key} match for "
+                f"{anchor!r}, found {len(matches)}; this garak is not the one these switches were written for"
+            )
+        return matches[0]
+
+    def _weave_after(self, key: str, anchor: str, block: str) -> None:
+        """Insert ``block`` as its own paragraph right after ``anchor`` in prompt ``key``."""
+        match = self._locate_anchor(key, anchor)
+        text = self._prompts[key]
+        rest = text[match.end() :].lstrip(" \t\n")
+        self._prompts[key] = (
+            text[: match.end()] + "\n\n" + block.strip("\n") + "\n\n" + rest
+        )
+
+    def _weave_replace(self, key: str, anchor: str, replacement: str) -> None:
+        """Replace ``anchor`` in prompt ``key`` with ``replacement`` in place."""
+        match = self._locate_anchor(key, anchor)
+        text = self._prompts[key]
+        self._prompts[key] = text[: match.start()] + replacement + text[match.end() :]
+
     def _load_prompts(self):
         """Load Single prompts plus the chain-specific planning prompts."""
         super()._load_prompts()
@@ -1146,6 +1187,31 @@ class ToolChain(AgentBreaker):
             logging.error("%s: %s", message, error)
             raise GarakException(message) from error
         self._prompts.update(prompts)
+        self._apply_robustness_switches()
+
+    def _apply_robustness_switches(self) -> None:
+        enabled = [
+            name for name in self._ROBUSTNESS_SWITCHES if self._switch_enabled(name)
+        ]
+        logging.info(
+            "%s # Robustness switches enabled: %s",
+            self.__class__.__name__,
+            ", ".join(enabled) or "none",
+        )
+        prompts = self._prompts
+        if self.ENV_LOOSE_REQUEST_CHECK in enabled:
+            self._weave_replace(
+                "CHECK_STEP_REQUEST",
+                "invents a required identifier,",
+                "asserts a required identifier that has no provenance in "
+                "AVAILABLE ARTIFACTS or the target's prior responses,",
+            )
+            self._weave_after(
+                "CHECK_STEP_REQUEST",
+                "abandons the hypothesis's required payload mechanism or "
+                "prerequisite.",
+                prompts["CHECK_STEP_REQUEST_DEFERRAL"],
+            )
 
     def _create_init_attempts(self) -> Iterable[garak.attempt.Attempt]:
         """Derive chains from the manifest and seed their first steps."""
@@ -2872,7 +2938,14 @@ class ToolChain(AgentBreaker):
                     "bound value lacks source evidence or is absent from the request",
                     request,
                 )
-        if step_index > 0 and self._tool_consumes(tool) and not input_bindings:
+        # With the loose request check a consuming step may defer its value to
+        # the target instead of binding one; the request check judges that.
+        if (
+            step_index > 0
+            and self._tool_consumes(tool)
+            and not input_bindings
+            and not self._switch_enabled(self.ENV_LOOSE_REQUEST_CHECK)
+        ):
             return self._reject_step_request(
                 tool,
                 "consuming step declares no artifact binding",

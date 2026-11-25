@@ -10,7 +10,7 @@ import yaml
 from garak import _config
 from garak.attempt import Attempt, Message
 from garak.data import path as data_path
-from garak.exception import PluginConfigurationError
+from garak.exception import GarakException, PluginConfigurationError
 from garak.probes.agent_breaker import AttackState, ToolChain
 
 
@@ -1865,3 +1865,92 @@ def test_consuming_step_cannot_invent_a_handoff_value():
         None,
         "",
     ), "a declared value that appears in no earlier step must be rejected"
+
+
+def _clear_robustness_switches(monkeypatch):
+    for name in ToolChain._ROBUSTNESS_SWITCHES:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_robustness_switches_off_leave_prompts_unchanged(monkeypatch):
+    _clear_robustness_switches(monkeypatch)
+    probe = _probe()
+    probe._apply_robustness_switches()
+    assert probe._prompts == _real_prompts(), "switches off must not alter prompts"
+
+
+def _flat(text):
+    return " ".join(text.split())
+
+
+@pytest.mark.parametrize(
+    "switch, key, block, anchor",
+    [
+        (
+            "GARAK_TC_LOOSE_REQUEST_CHECK",
+            "CHECK_STEP_REQUEST",
+            "CHECK_STEP_REQUEST_DEFERRAL",
+            "payload mechanism or prerequisite.",
+        ),
+    ],
+)
+def test_robustness_switch_weaves_guidance_after_its_sentence(
+    monkeypatch, switch, key, block, anchor
+):
+    _clear_robustness_switches(monkeypatch)
+    monkeypatch.setenv(switch, "1")
+    probe = _probe()
+    probe._apply_robustness_switches()
+    prompt = _flat(probe._prompts[key])
+    guidance = _flat(probe._prompts[block])
+    assert (
+        _flat(anchor + " " + guidance) in prompt
+    ), "the guidance must follow the sentence it changes"
+    assert prompt.count(guidance) == 1, "the guidance must be added once"
+
+
+def test_loose_request_check_rewords_the_invented_identifier_rule(monkeypatch):
+    _clear_robustness_switches(monkeypatch)
+    monkeypatch.setenv("GARAK_TC_LOOSE_REQUEST_CHECK", "1")
+    probe = _probe()
+    probe._apply_robustness_switches()
+    prompt = _flat(probe._prompts["CHECK_STEP_REQUEST"])
+    assert "invents a required identifier" not in prompt
+    assert "asserts a required identifier that has no provenance" in prompt
+
+
+def test_robustness_switch_fails_loudly_when_its_sentence_is_gone(monkeypatch):
+    _clear_robustness_switches(monkeypatch)
+    monkeypatch.setenv("GARAK_TC_LOOSE_REQUEST_CHECK", "1")
+    probe = _probe()
+    probe._prompts["CHECK_STEP_REQUEST"] = "a prompt without the anchored sentence"
+    with pytest.raises(GarakException):
+        probe._apply_robustness_switches()
+
+
+def test_robustness_switch_prompts_still_format(monkeypatch):
+    for name in ToolChain._ROBUSTNESS_SWITCHES:
+        monkeypatch.setenv(name, "1")
+    probe = _probe()
+    probe._apply_robustness_switches()
+    values = probe._step_prompt_values(_chain_with_prior(), 1)
+    probe._prompts["STEP_ATTACK"].format(**values)
+    probe._prompts["STEP_EXPLOIT"].format(
+        **values, tried_techniques="", last_response="", history_str=""
+    )
+    probe._prompts["CHECK_STEP_REQUEST"].format(
+        **values, step_prompt="x", input_bindings="[]"
+    )
+
+
+def test_loose_request_check_allows_a_consuming_step_that_defers(monkeypatch):
+    _clear_robustness_switches(monkeypatch)
+    request = "Find the record matching the description and return its id."
+    probe = _probe()
+    assert probe._ground_consuming_request(
+        _chain_with_prior(), 1, request, "test", []
+    ) == (None, ""), "by default a consuming step must bind a value"
+    monkeypatch.setenv("GARAK_TC_LOOSE_REQUEST_CHECK", "1")
+    assert probe._ground_consuming_request(
+        _chain_with_prior(), 1, request, "test", []
+    ) == (request, "test"), "the loose check leaves deferral to the request judge"
