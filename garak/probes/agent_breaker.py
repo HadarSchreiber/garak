@@ -988,11 +988,44 @@ class AgentBreaker(garak.probes.IterativeProbe):
         Ported from barlanyado/garak tool_chain_attack. No-op without a generator or tools."""
         if not self.agent_config.get("tools") or not hasattr(self, "generator"):
             return
-        logging.info(f"{self.__class__.__name__} # Deep recon per tool...")
-        self.tool_profiles = self._perform_deep_recon(self.generator)
-        if self.behavioral_probe_enabled:
-            logging.info(f"{self.__class__.__name__} # Behavioural baseline probing...")
-            self.tool_behaviors = self._perform_behavioral_probe(self.generator)
+        import os as _os
+
+        # RECON_CACHE: reuse a prior recon_exp.json instead of live recon. The recon collection
+        # (profiles + behaviours) is identical across rendering variants, so caching it once per
+        # scenario isolates the variant's effect to RENDERING alone and avoids re-running recon for
+        # every variant/replicate. The dump below is still re-rendered under this variant's env.
+        _cache = _os.environ.get("RECON_CACHE")
+        if _cache and _os.path.isfile(_cache):
+            try:
+                import json as _json
+
+                with open(_cache, encoding="utf-8") as _fh:
+                    _cached = _json.load(_fh)
+                self.tool_profiles = _cached.get("tool_profiles") or {}
+                self.tool_behaviors = _cached.get("tool_behaviors") or {}
+                _ac = _cached.get("agent_config") or {}
+                if _ac.get("tools"):
+                    self.agent_config["tools"] = _ac["tools"]
+                if _ac.get("agent_purpose") and not self.agent_config.get("agent_purpose"):
+                    self.agent_config["agent_purpose"] = _ac["agent_purpose"]
+                logging.info(
+                    "%s # Loaded recon from RECON_CACHE (%d profiles, %d behaviours) - skipping live recon",
+                    self.__class__.__name__,
+                    len(self.tool_profiles),
+                    len(self.tool_behaviors),
+                )
+            except Exception as _exc:
+                logging.warning("%s # RECON_CACHE load failed (%s); falling back to live recon", self.__class__.__name__, _exc)
+                _cache = None
+        else:
+            _cache = None
+
+        if not _cache:
+            logging.info(f"{self.__class__.__name__} # Deep recon per tool...")
+            self.tool_profiles = self._perform_deep_recon(self.generator)
+            if self.behavioral_probe_enabled:
+                logging.info(f"{self.__class__.__name__} # Behavioural baseline probing...")
+                self.tool_behaviors = self._perform_behavioral_probe(self.generator)
         # Optional recon dump (inert unless RECON_DUMP is set): write the recon results so the harness
         # can collect them. Does not affect the attack.
         import os as _os
