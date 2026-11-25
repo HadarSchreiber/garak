@@ -848,6 +848,8 @@ class AgentBreaker(garak.probes.IterativeProbe):
 
         return "\n".join(lines) + "\n"
 
+    _BEHAVIOR_RENDER_MAX_OBS = 3  # observations rendered per tool (diverse by outcome)
+
     @staticmethod
     def _format_tool_behavior(
         observations: list,
@@ -859,35 +861,56 @@ class AgentBreaker(garak.probes.IterativeProbe):
         verbatim error and refusal strings, output shapes, and constraints
         surfaced by the agent — so attack generation isn't operating on the
         agent's self-description alone.
+
+        BOUNDED: renders at most ``_BEHAVIOR_RENDER_MAX_OBS`` observations, chosen to cover distinct
+        outcomes (a success, an error, a refusal) rather than the first few, and truncates each field.
+        The full, untruncated observations stay in ``self.tool_behaviors`` for grounding; this only
+        bounds what is rendered into helper prompts, which otherwise overflow the 32000-char limit and
+        silently drop every chain.
         """
         if not observations:
             return ""
+
+        def _trunc(value, limit):
+            text = str(value)
+            return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+        # pick a diverse subset: first observation of each distinct outcome, then fill in order
+        chosen, seen_outcomes = [], set()
+        for obs in observations:
+            if not isinstance(obs, dict):
+                continue
+            oc = str(obs.get("outcome", ""))
+            if oc not in seen_outcomes:
+                seen_outcomes.add(oc)
+                chosen.append(obs)
+        for obs in observations:
+            if len(chosen) >= AgentBreaker._BEHAVIOR_RENDER_MAX_OBS:
+                break
+            if isinstance(obs, dict) and obs not in chosen:
+                chosen.append(obs)
+        chosen = chosen[: AgentBreaker._BEHAVIOR_RENDER_MAX_OBS]
+
         lines = [header]
-        for i, obs in enumerate(observations, start=1):
+        for i, obs in enumerate(chosen, start=1):
             lines.append(f"  Probe {i}:")
-            probe_prompt = obs.get("probe_prompt")
-            if probe_prompt:
-                lines.append(f"    Probe prompt: {probe_prompt}")
-            outcome = obs.get("outcome")
-            if outcome:
-                lines.append(f"    Outcome: {outcome}")
-            output_shape = obs.get("output_shape")
-            if output_shape:
-                lines.append(f"    Output shape: {output_shape}")
-            output_sample = obs.get("output_sample")
-            if output_sample:
-                lines.append(f"    Output sample: {output_sample}")
-            error_signature = obs.get("error_signature")
-            if error_signature:
-                lines.append(f"    Error signature: {error_signature}")
-            refusal_signature = obs.get("refusal_signature")
-            if refusal_signature:
-                lines.append(f"    Refusal signature: {refusal_signature}")
-            observed_constraints = obs.get("observed_constraints") or []
-            if observed_constraints:
+            if obs.get("probe_prompt"):
+                lines.append(f"    Probe prompt: {_trunc(obs['probe_prompt'], 120)}")
+            if obs.get("outcome"):
+                lines.append(f"    Outcome: {_trunc(obs['outcome'], 40)}")
+            if obs.get("output_shape"):
+                lines.append(f"    Output shape: {_trunc(obs['output_shape'], 160)}")
+            if obs.get("output_sample"):
+                lines.append(f"    Output sample: {_trunc(obs['output_sample'], 240)}")
+            if obs.get("error_signature"):
+                lines.append(f"    Error signature: {_trunc(obs['error_signature'], 160)}")
+            if obs.get("refusal_signature"):
+                lines.append(f"    Refusal signature: {_trunc(obs['refusal_signature'], 160)}")
+            constraints = [c for c in (obs.get("observed_constraints") or [])][:4]
+            if constraints:
                 lines.append("    Observed constraints:")
-                for c in observed_constraints:
-                    lines.append(f"      - {c}")
+                for c in constraints:
+                    lines.append(f"      - {_trunc(c, 120)}")
         return "\n".join(lines) + "\n"
 
     # --- Stage 1: recon anti-fabrication (structural, vocabulary-free) ----------------------------
@@ -2003,6 +2026,32 @@ class ToolChain(AgentBreaker):
             blocks.append(block)
         return "\n\n".join(blocks) + self._grounded_block()
 
+    def _format_tools_compact(self) -> str:
+        """Name + bounded description + parameter signature only, for HELPER prompts (tool tagging,
+        capability-graph) that must stay under ``_HELPER_PROMPT_CHAR_LIMIT``. The full enriched
+        rendering (behavioural transcripts + grounded-id block) is for ANALYSIS; feeding it into the
+        structural tagging prompt overflowed the helper limit and silently produced zero chains. This
+        keeps tagging about tool identity (what each tool is and takes), where the transcripts add
+        length without changing the capability labels."""
+        blocks = []
+        for tool in self.agent_config.get("tools", []):
+            if not isinstance(tool, dict):
+                continue
+            name = tool.get("name", "unnamed")
+            line = "### Tool: {name}\nDescription: {description}".format(
+                name=name,
+                description=self._bounded_text(tool.get("description", "No description"), self._FIELD_CHAR_LIMIT),
+            )
+            profile = (self.tool_profiles or {}).get(name) or {}
+            params = [p for p in (profile.get("parameters") or []) if isinstance(p, dict) and p.get("name")]
+            if params:
+                sig = ", ".join(
+                    f"{p.get('name')}:{p.get('type', '?')}{'*' if p.get('required') else ''}" for p in params
+                )
+                line += f"\nParameters: {sig}"
+            blocks.append(line)
+        return "\n\n".join(blocks)
+
     def _selected_tool_block(self, sequence: list, step_index: int) -> str:
         if step_index >= len(sequence):
             return ""
@@ -2146,7 +2195,7 @@ class ToolChain(AgentBreaker):
                 self.agent_config.get("agent_purpose", "Unknown purpose"),
                 self._FIELD_CHAR_LIMIT,
             ),
-            tools_description=self._format_tools_for_analysis(self.tool_profiles, self.tool_behaviors),
+            tools_description=self._format_tools_compact(),
             per_tool_analyses=self._format_per_tool_analyses(
                 (self.agent_analysis or {}).get("tool_analyses", {})
             ),
